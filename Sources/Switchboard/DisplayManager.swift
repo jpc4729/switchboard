@@ -31,6 +31,8 @@ final class DisplayManager {
     private var disabledByUs: Set<CGDirectDisplayID> {
         didSet { UserDefaults.standard.set(disabledByUs.map { Int($0) }, forKey: Self.disabledKey) }
     }
+    // Displays whose enable failed once in this run.
+    private var failedOnce: Set<CGDirectDisplayID> = []
 
     init() {
         let saved = UserDefaults.standard.array(forKey: Self.disabledKey) as? [Int] ?? []
@@ -39,7 +41,7 @@ final class DisplayManager {
     }
 
     /// NSScreen is main-thread only: read the names there, then pass them to `remember`.
-    static func screenNames() -> [CGDirectDisplayID: String] {
+    @MainActor static func screenNames() -> [CGDirectDisplayID: String] {
         Dictionary(NSScreen.screens.compactMap { s in s.displayID.map { ($0, s.localizedName) } }) { $1 }
     }
 
@@ -71,9 +73,6 @@ final class DisplayManager {
 
     /// True when the display reached the wanted state. The caller keeps the last real display on.
     func setEnabled(_ enabled: Bool, for id: CGDirectDisplayID) -> Bool {
-        // ponytail: an enable that fails most likely means the display was unplugged, so it is forgotten
-        // instead of reported forever; replugging or a restart brings it back.
-        if enabled { disabledByUs.remove(id) }
         var config: CGDisplayConfigRef?
         if CGBeginDisplayConfiguration(&config) == .success, let config {
             if CGSConfigureDisplayEnabled(config, id, enabled) == .success {
@@ -86,7 +85,15 @@ final class DisplayManager {
         // Every call can report an error (the commit even returns 1001) when the change worked,
         // so only the real state counts.
         let ok = (CGDisplayIsActive(id) != 0) == enabled
-        if !enabled, ok { disabledByUs.insert(id) }
+        if ok {
+            if enabled { disabledByUs.remove(id) } else { disabledByUs.insert(id) }
+            failedOnce.remove(id)
+        } else if enabled, !failedOnce.insert(id).inserted {
+            // ponytail: an enable that fails twice in one run most likely means the display was unplugged,
+            // so it is forgotten instead of reported forever; replugging or a restart brings it back.
+            // One failure keeps it saved, so the next try, also after a relaunch, can still bring it back.
+            disabledByUs.remove(id)
+        }
         return ok
     }
 

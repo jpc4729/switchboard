@@ -2,10 +2,11 @@ import AppKit
 import SwiftUI
 
 /// The menu's controls in a small window: a picker for each screen, Back to Computer and Set Up.
-/// Call from the main thread only.
+@MainActor
 enum ControlWindow {
     private static var window: NSWindow?
     private static var host: NSHostingController<ControlView>?
+    private static var closing: NSObjectProtocol?
 
     static func show(_ view: ControlView) {
         if window == nil {
@@ -15,6 +16,16 @@ enum ControlWindow {
             new.isReleasedWhenClosed = false
             new.center()
             (window, self.host) = (new, host)
+            // Free the SwiftUI view on close, so a closed window costs no memory and no updates.
+            // queue nil runs it inside close().
+            closing = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: new, queue: nil
+            ) { _ in
+                MainActor.assumeIsolated {
+                    closing.map(NotificationCenter.default.removeObserver)
+                    (window, self.host, closing) = (nil, nil, nil)
+                }
+            }
         }
         update(view)
         NSApp.activate(ignoringOtherApps: true)

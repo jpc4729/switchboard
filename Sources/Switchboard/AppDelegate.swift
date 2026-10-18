@@ -1,10 +1,13 @@
 import AppKit
+import os
 import ServiceManagement
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let switcher = Switcher()
     private var statusItem: NSStatusItem!
-    private var hotKey: HotKey?
+    /// Nil when another app owns ⌃⌥⌘B; the menu then says so.
+    private(set) var hotKey: HotKey?
     // menuNeedsUpdate is synchronous, so the menu is built from this list, refreshed on launch,
     // after each action and on every screen change.
     var screens: [Display] = []
@@ -20,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
         hotKey = HotKey { [weak self] in self?.backToComputer() }
+        switcher.onKeptRead = { [weak self] in self?.updateIcon() }
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil
@@ -29,7 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         refresh()
         if switcher.config.screens.isEmpty { setUp() }
-        if hotKey == nil { showError("Another app uses ⌃⌥⌘B, so Back to Computer has no shortcut. Use the menu.") }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -58,8 +61,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        let back = add("Back to Computer", #selector(backToComputer), to: menu, key: "b")
-        back.keyEquivalentModifierMask = [.control, .option, .command]
+        if hotKey == nil {
+            add("Back to Computer", #selector(backToComputer), to: menu)
+            menu.addItem(withTitle: "Another app uses ⌃⌥⌘B", action: nil, keyEquivalent: "").isEnabled = false
+        } else {
+            let back = add("Back to Computer", #selector(backToComputer), to: menu, key: "b")
+            back.keyEquivalentModifierMask = [.control, .option, .command]
+        }
         let modes = NSMenu()
         for (title, value) in [("Sleep", Config.NoScreenMode.sleep), ("Keep Running", .keepRunning)] {
             let row = add(title, #selector(pickMode(_:)), to: modes)
@@ -68,7 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(withTitle: "When No Screen Is Left", action: nil, keyEquivalent: "").submenu = modes
         let login = add("Open at Login", #selector(toggleLogin(_:)), to: menu)
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        // Mixed: registered, but the user turned it off in Login Items, so a click opens that pane.
+        let status = SMAppService.mainApp.status
+        login.state = status == .enabled ? .on : status == .requiresApproval ? .mixed : .off
+        add("Ask Before Links", #selector(toggleAskBeforeLinks), to: menu).state = switcher.config.askBeforeLinks ? .on : .off
         menu.addItem(.separator())
         add("Open Window", #selector(openWindow), to: menu, key: "o")
         add("Set Up Screens…", #selector(setUp), to: menu, key: ",")
@@ -79,24 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // ponytail: the menu is built first, so a change shows on the next open; set item states in place to fix.
     func menuWillOpen(_ menu: NSMenu) {
         guard !reading else { return }
-        let config = switcher.config
-        let reads = screens.filter { !$0.isBuiltin && $0.isEnabled }
-            .compactMap { d in config.screens[d.key].map { (d.id, d.key, $0) } }
         reading = true
-        switcher.run({ reads.map { ($0.1, $0.2, DDC.readInput($0.0)) } }) { [weak self] inputs in
-            guard let self else { return }
-            reading = false
-            var choices = switcher.config.choices
-            var mac: [String] = []
-            for case let (key, screen, input?) in inputs {
-                if input == screen.computerInput {
-                    choices[key] = nil
-                    mac.append(key)
-                } else if screen.devices.contains(where: { $0.input == input }) { choices[key] = .device(input) }
-            }
-            switcher.config.choices = choices
-            switcher.backOnMac(mac)
-            updateIcon()
+        switcher.readInputs(of: Set(switcher.config.screens.keys)) { [weak self] in
+            self?.reading = false
+            self?.updateIcon()
         }
     }
 
@@ -167,8 +164,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !leaving else { return .terminateLater }
         leaving = true
-        // ponytail: errors are dropped on the way out; an alert while quitting would not help much.
-        switcher.backToComputer { _ in sender.reply(toApplicationShouldTerminate: true) }
+        // ponytail: errors only go to the log on the way out; an alert while quitting would not help much.
+        switcher.backToComputer { error in
+            if let error { Logger.app.error("Back to Computer at quit: \(error, privacy: .public)") }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
         return .terminateLater
     }
 

@@ -7,10 +7,13 @@ extension AppDelegate {
         pick(display, choice)
     }
 
-    /// The one switch path for the menu, the window and links.
+    /// The one switch path for the menu, the window and links. The lid check reads the screens on the
+    /// queue, so it sees every switch picked before it.
     func pick(_ display: Display, _ choice: Config.Choice) {
-        guard confirmLidClosed(for: display, to: choice) else { return }
-        switcher.switchScreen(display, to: choice, done: finish)
+        switcher.leavesClosedLidRunning(display, to: choice) { [weak self] closedLid in
+            guard let self, !closedLid || confirmLidClosed() else { return }
+            switcher.switchScreen(display, to: choice, done: finish)
+        }
     }
 
     /// Mac, each set-up device, then Off, in the order the menu and the window show them.
@@ -46,13 +49,13 @@ extension AppDelegate {
     }
 
     /// Asks first when the switch would leave a closed-lid Mac running with no screen. False means cancel.
-    func confirmLidClosed(for display: Display, to choice: Config.Choice) -> Bool {
-        let isLast = !screens.contains { $0.id != display.id && $0.isEnabled && !DisplayManager.isVirtual($0.id) }
-        guard case .device = choice, Switcher.action(isLastRealDisplay: isLast, mode: switcher.config.noScreenMode)
-            == .keepRunning, DisplayManager.isLidClosed() else { return true }
+    private func confirmLidClosed() -> Bool {
+        let back = hotKey == nil
+            ? "Another app uses ⌃⌥⌘B, so choose the Mac with the screen’s own button to come back."
+            : "Press ⌃⌥⌘B to come back."
         let alert = NSAlert()
         alert.messageText = "The lid is closed"
-        alert.informativeText = "No screen will show the Mac, and the Mac keeps running. Press ⌃⌥⌘B to come back."
+        alert.informativeText = "No screen will show the Mac, and the Mac keeps running. " + back
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
@@ -61,10 +64,11 @@ extension AppDelegate {
 
     @objc func toggleLogin(_ sender: NSMenuItem) {
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
+            switch SMAppService.mainApp.status {
+            case .enabled: try SMAppService.mainApp.unregister()
+            // Registered, but turned off in Login Items: only the user can turn it on there.
+            case .requiresApproval: SMAppService.openSystemSettingsLoginItems()
+            default: try SMAppService.mainApp.register()
             }
         } catch {
             showError("Switchboard could not change Open at Login. Try again in System Settings > General > Login Items.")
@@ -84,26 +88,52 @@ extension AppDelegate {
                     self?.screens = list
                     self?.switchScreen(named: value("screen"), to: value("to"))
                 }
-            default: showError("Switchboard does not know the link “\(url.absoluteString)”.")
+            // The link's own text is not shown: any web page can open a link with words of its choice.
+            default: showError("Switchboard does not know this link.")
             }
         }
+    }
+
+    @objc func toggleAskBeforeLinks() {
+        switcher.config.askBeforeLinks.toggle()
+    }
+
+    /// Any app or web page can open a link, so a link that turns a screen off or switches it away asks first.
+    /// False means cancel. The names are the user's own, from Setup, never text from the link.
+    private func confirmLink(_ action: String) -> Bool {
+        guard switcher.config.askBeforeLinks else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Allow this link?"
+        alert.informativeText = "A link asks Switchboard to \(action). Links can come from any app or web page."
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Do not ask again"
+        NSApp.activate(ignoringOtherApps: true)
+        let allowed = alert.runModal() == .alertFirstButtonReturn
+        if allowed, alert.suppressionButton?.state == .on { switcher.config.askBeforeLinks = false }
+        return allowed
     }
 
     private func switchScreen(named name: String, to target: String) {
         let config = switcher.config
         let same = { (a: String, b: String) in a.caseInsensitiveCompare(b) == .orderedSame }
         guard let display = screens.first(where: { same(config.screens[$0.key]?.name ?? $0.name, name) }) else {
-            return showError("Switchboard does not know the screen “\(name)”.")
+            return showError("Switchboard has no screen with the name in the link.")
         }
         let screen = config.screens[display.key]
+        let screenName = screen?.name ?? display.name
         let choice: Config.Choice
         switch target.lowercased() {
         case "mac": choice = .mac
-        case "off": choice = .off
+        case "off":
+            guard confirmLink("turn “\(screenName)” off") else { return }
+            choice = .off
         default:
             guard let device = screen?.devices.first(where: { same($0.name, target) }) else {
-                return showError("“\(screen?.name ?? display.name)” has no device “\(target)”.")
+                return showError("“\(screenName)” has no device with the name in the link.")
             }
+            guard confirmLink("switch “\(screenName)” to \(device.name)") else { return }
             choice = .device(device.input)
         }
         pick(display, choice)

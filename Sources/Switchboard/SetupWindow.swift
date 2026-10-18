@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// The setup form for every external screen, in its own window. Call from the main thread only.
+/// The setup form for every external screen, in its own window.
+@MainActor
 enum SetupWindow {
     private static var window: NSWindow?
+    private static var closing: NSObjectProtocol?
 
     static func show(switcher: Switcher, onSave: @escaping () -> Void) {
         switcher.displays { list in
@@ -29,6 +31,15 @@ enum SetupWindow {
             new.isReleasedWhenClosed = false
             new.center()
             window = new
+            // Free the SwiftUI view on close, so a closed window costs no memory. queue nil runs it inside close().
+            closing = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: new, queue: nil
+            ) { _ in
+                MainActor.assumeIsolated {
+                    closing.map(NotificationCenter.default.removeObserver)
+                    (window, closing) = (nil, nil)
+                }
+            }
             NSApp.activate(ignoringOtherApps: true)
             new.makeKeyAndOrderFront(nil)
         }
@@ -37,7 +48,7 @@ enum SetupWindow {
     /// The standard codes; each row adds the custom codes its monitor uses.
     // ponytail: no automatic probe of codes 0 to 32, because each write switches the monitor and blanks
     // the screen; add it if users ask, with a warning.
-    static let inputs: [(label: String, code: UInt8)] = [
+    nonisolated static let inputs: [(label: String, code: UInt8)] = [
         ("DisplayPort 1", 0x0F), ("DisplayPort 2", 0x10), ("HDMI 1", 0x11), ("HDMI 2", 0x12), ("USB-C", 0x1B),
     ]
 }
@@ -66,7 +77,8 @@ private struct SetupView: View {
     @State var rows: [SetupRow]
     let onSave: () -> Void
     @State private var message = "Press Test to see what is on each input for 5 seconds. Then type the device name."
-    // Test waits for the Mac's input to be read, so it switches back to the right input.
+    // Test and Save wait for the Mac's input to be read, so Test switches back to the right input
+    // and Save does not keep the default.
     @State private var ready = false
 
     var body: some View {
@@ -100,7 +112,7 @@ private struct SetupView: View {
             HStack {
                 Text(message).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Button("Save", action: save).keyboardShortcut(.defaultAction)
+                Button("Save", action: save).keyboardShortcut(.defaultAction).disabled(!ready)
             }
             .padding()
         }
@@ -109,14 +121,24 @@ private struct SetupView: View {
     }
 
     /// Learns the Mac's input on each new screen from the screen itself; an unknown code is added as a row.
+    /// A screen that does not answer keeps the default, and the message asks the user to check it.
     private func readInputs() {
         let ids = rows.filter { !$0.saved }.map(\.id)
-        switcher.run({ ids.map { ($0, DDC.readInput($0)) } }) { inputs in
-            // 0 is not an input code in MCCS; a monitor that answers 0 keeps the default.
-            for case let (id, input?) in inputs where input > 0 {
+        switcher.run({ _ in ids.map { ($0, DDC.readInput($0)) } }) { inputs in
+            var unread: [String] = []
+            for (id, input) in inputs {
                 guard let index = rows.firstIndex(where: { $0.id == id }) else { continue }
+                // 0 is not an input code in MCCS, so a monitor that answers 0 did not answer.
+                guard let input, input > 0 else {
+                    unread.append("“\(rows[index].name)”")
+                    continue
+                }
                 rows[index].add(input)
                 rows[index].mac = input
+            }
+            if !unread.isEmpty {
+                message = "Switchboard could not read the Mac’s input on \(unread.joined(separator: ", ")). "
+                    + "Check “This Mac is on” before you save."
             }
             ready = true
         }
@@ -126,7 +148,7 @@ private struct SetupView: View {
     private func test(_ row: SetupRow, _ input: UInt8) {
         let (id, mac, name) = (row.id, row.mac, row.name)
         message = "Testing “\(name)”. The Mac comes back in 5 seconds."
-        switcher.run({ () -> String in
+        switcher.run({ _ -> String in
             // Waits and switches back even when the write reports a failure: the monitor may have taken it.
             let switched = DDC.writeInput(input, to: id)
             sleep(5)

@@ -29,7 +29,7 @@ The cask installs the app and links the `switchboard` command.
 open build/Switchboard.app
 ```
 
-For a debug build, use `swift build`. To build the rule tests, use `swift build --build-tests`. To run them, use `swift test`.
+You need Swift 6 or later (Xcode 16 or later). For a debug build, use `swift build`. To build the rule tests, use `swift build --build-tests`. To run them, use `swift test`.
 
 The maintainers run commands through a `quiet` wrapper. It is optional, and the repo does not need it.
 
@@ -57,17 +57,18 @@ A build from source is not quarantined, so it opens without these steps.
 - Any number of screens and devices. You give each one a name.
 - For each screen, the menu shows the Mac, each device and Off. A checkmark shows the current choice.
 - When a screen shows a device, the Mac stops using that screen, so your windows move to the screens that you can see.
-- Back to Computer turns all screens on again and switches each one back to the Mac. The shortcut is ⌃⌥⌘B. Quit, logout and restart also do this. If another app uses ⌃⌥⌘B, Switchboard tells you at launch, and you use the menu.
+- Back to Computer turns all screens on again and switches each one back to the Mac. The shortcut is ⌃⌥⌘B. Quit, logout and restart also do this. If another app uses ⌃⌥⌘B, the menu says so, and you use the menu.
 - The last screen always stays on. You select what the Mac does then: sleep or keep running. Keep Running stops the Mac from going to sleep while no screen shows it. If the lid is closed, Switchboard asks before it does this.
 - The menu bar shows the device names when a screen is away, and a warning icon when an action failed. Errors are in plain words. When a screen does not switch, the message tells you what to try.
-- When you open the menu, Switchboard asks each screen which input it shows, so the checkmarks follow the screen's own button too. A change shows the next time you open the menu.
-- Setup finds each external screen and reads which input the Mac is on. Switchboard cannot see which device is on an input: press Test to see an input for 5 seconds, then type the name of the device. Setup opens at first launch, from Set Up Screens… in the menu, and from Set Up This Screen… on a new screen.
+- When you open the menu, Switchboard asks each screen which input it shows, so the checkmarks follow the screen's own button too. A change shows the next time you open the menu. While the last screen shows a device, Switchboard asks it every 30 seconds, so when you select the Mac with the screen's own button, Keep Running stops holding the Mac awake.
+- Setup finds each external screen and reads which input the Mac is on. If a screen does not answer, Setup tells you to select the input yourself. Switchboard cannot see which device is on an input: press Test to see an input for 5 seconds, then type the name of the device. Setup opens at first launch, from Set Up Screens… in the menu, and from Set Up This Screen… on a new screen.
 - If a monitor uses other input codes, Setup adds the code that it reads, and you can add a code (1 to 255) by hand.
 - Open Window (⌘O in the menu, or open the app again from Finder) shows the same controls in a small window: a picker for each screen, Back to Computer and Set Up Screens….
-- Open at Login in the menu starts Switchboard when you log in.
+- Open at Login in the menu starts Switchboard when you log in. If you turned Switchboard off in System Settings > General > Login Items, the item shows a dash, and a click opens that pane.
 - Other apps, such as Shortcuts, Stream Deck or Terminal, can open these links:
   - `switchboard://back` does Back to Computer.
   - `switchboard://switch?screen=Odyssey&to=PS5` switches one screen. `to` is `mac`, `off` or a device name. Names are not case-sensitive.
+  - Any app or web page can open a link, so a link to `off` or to a device asks you first. Select Do not ask again in that question, or clear Ask Before Links in the menu, to let links run with no question. Links to `mac` and `back` never ask.
 
 ## Requirements
 
