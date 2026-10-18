@@ -1,5 +1,7 @@
 # Switchboard
 
+<img src="assets/logo.png" alt="Switchboard logo" width="128">
+
 Switchboard is a small, open source macOS menu bar app. It changes the input of each monitor that is connected to your Mac, so one monitor can show your Mac or another device without a cable change.
 
 Status: the Must version is implemented. It is not tested on hardware yet.
@@ -11,9 +13,16 @@ Status: the Must version is implemented. It is not tested on hardware yet.
 - For each screen, the menu shows the Mac, each device and Off. A checkmark shows the current choice.
 - When a screen shows a device, the Mac stops using that screen, so your windows move to the screens that you can see.
 - Back to Computer turns all screens on again and switches each one back to the Mac. The shortcut is ⌃⌥⌘B. Quit, logout and restart also do this. If another app uses ⌃⌥⌘B, Switchboard tells you at launch, and you use the menu.
-- The last screen always stays on. You select what the Mac does then: sleep or keep running.
-- The menu bar shows the device names when a screen is away, and a warning icon when an action failed. Errors are in plain words.
-- Setup finds each external screen, reads which input the Mac is on, and lets you name the device on each other input. A Test button shows the device for 5 seconds and then switches back to the Mac. Setup opens at first launch and from Set Up Screens… in the menu.
+- The last screen always stays on. You select what the Mac does then: sleep or keep running. Keep Running stops the Mac from going to sleep while no screen shows it. If the lid is closed, Switchboard asks before it does this.
+- The menu bar shows the device names when a screen is away, and a warning icon when an action failed. Errors are in plain words. When a screen does not switch, the message tells you what to try.
+- When you open the menu, Switchboard asks each screen which input it shows, so the checkmarks follow the screen's own button too. A change shows the next time you open the menu.
+- Setup finds each external screen and reads which input the Mac is on. Switchboard cannot see which device is on an input: press Test to see an input for 5 seconds, then type the name of the device. Setup opens at first launch, from Set Up Screens… in the menu, and from Set Up This Screen… on a new screen.
+- If a monitor uses other input codes, Setup adds the code that it reads, and you can add a code (1 to 255) by hand.
+- Open Window (⌘O in the menu, or open the app again from Finder) shows the same controls in a small window: a picker for each screen, Back to Computer and Set Up Screens….
+- Open at Login in the menu starts Switchboard when you log in.
+- Other apps, such as Shortcuts, Stream Deck or Terminal, can open these links:
+  - `switchboard://back` does Back to Computer.
+  - `switchboard://switch?screen=Odyssey&to=PS5` switches one screen. `to` is `mac`, `off` or a device name. Names are not case-sensitive.
 
 ## Requirements
 
@@ -49,6 +58,11 @@ Switchboard works offline. It collects nothing and sends nothing.
 - Switchboard never disables the last real screen. It keeps that screen on and, if you selected Sleep, puts the Mac to sleep.
 - If no real screen is left on, for example after you disconnect a monitor, Switchboard does Back to Computer. It does not do this when you sent the last screen to a device yourself.
 - Display and DDC calls can block for some seconds. Switchboard runs them on one background queue.
+- After the Mac wakes, Switchboard checks the screens again, the same as after a screen change.
+- Keep Running holds an IOKit power assertion that prevents idle sleep. Sleep uses `pmset sleepnow`, because macOS has no public call to sleep now.
+- The lid state comes from the `AppleClamshellState` value in the IORegistry. Apple does not document it. A Mac without a lid has no value, and Switchboard takes the lid as open.
+- Many Samsung monitors accept DDC only over HDMI, and picture features such as Input Signal Plus or Dynamic Brightness can block it. Setup does not try all input codes for you, because each try switches the monitor and makes the screen go black.
+- The links use a URL scheme. App Intents would need an Xcode build, and Switchboard builds with SwiftPM.
 
 ## License
 

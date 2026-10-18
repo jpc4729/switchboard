@@ -4,7 +4,7 @@ import Foundation
 struct Config: Codable {
     enum NoScreenMode: String, Codable { case sleep, keepRunning }
     /// What a screen shows. A device is named by its input value on that screen.
-    enum Choice: Codable, Equatable { case mac, device(UInt8), off }
+    enum Choice: Codable, Hashable { case mac, device(UInt8), off }
     struct Device: Codable {
         var name: String
         var input: UInt8
@@ -20,8 +20,8 @@ struct Config: Codable {
     /// Keyed by `Display.key`.
     var screens: [String: Screen] = [:]
     var noScreenMode: NoScreenMode = .sleep
-    // ponytail: tracked choice only, no DDC read-back of the current input, so the screen's own
-    // button can make it stale; read DDC.readInput on menu open if that confuses users.
+    // Corrected from DDC.readInput on menu open for enabled, set-up screens; a screen the app
+    // turned off keeps its tracked choice.
     // Saved so the menu and Back to Computer survive a crash. A missing key means Mac.
     var choices: [String: Choice] = [:]
 

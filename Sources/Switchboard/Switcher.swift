@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import IOKit.pwr_mgt
 
 /// Runs every display and DDC call on one serial background queue and calls back on the main queue
 /// with a plain-words error, or nil. Call it from the main thread only.
@@ -8,7 +9,10 @@ final class Switcher {
 
     /// Saved on every change.
     var config = Config.load() {
-        didSet { config.save() }
+        didSet {
+            config.save()
+            holdAwake()
+        }
     }
 
     private let queue = DispatchQueue(label: "io.github.jpc4729.switchboard.switcher")
@@ -17,7 +21,11 @@ final class Switcher {
     // The last screen, kept on while it shows a device: the user chose to leave the Mac with no screen.
     // ponytail: in memory only, and a kept screen that comes back by its own button still shows the device
     // until Back to Computer; persist it in Config and track reappearing screens if that confuses users.
-    private var keptOn: Set<String> = []
+    // Changed on main, in the done callbacks. Keep Running holds the Mac awake while any screen is kept on.
+    private var keptOn: Set<String> = [] {
+        didSet { holdAwake() }
+    }
+    private var awake: IOPMAssertionID?
 
     /// The last real active display is never disabled; it stays on, and the Mac sleeps if asked to.
     static func action(isLastRealDisplay: Bool, mode: Config.NoScreenMode) -> Action {
@@ -26,7 +34,8 @@ final class Switcher {
     }
 
     static func didNotSwitch(_ name: String) -> String {
-        "“\(name)” did not switch. Turn on DDC/CI in the screen’s own menu."
+        "“\(name)” did not switch. Turn on DDC/CI in the screen’s own menu. Connect the monitor with HDMI if you can, "
+            + "and turn off its picture features such as Input Signal Plus or Dynamic Brightness."
     }
 
     static func didNotSwitchBack(_ name: String) -> String {
@@ -83,6 +92,11 @@ final class Switcher {
         }
     }
 
+    /// The user chose the Mac with these screens' own buttons, so they are no longer kept on.
+    func backOnMac(_ keys: [String]) {
+        keptOn.subtract(keys)
+    }
+
     /// Turns every screen the app turned off back on, then switches each set-up screen to the Mac.
     /// Safe to run again, and before or after the user presses the screen's own button.
     func backToComputer(done: @escaping (String?) -> Void) {
@@ -134,7 +148,24 @@ final class Switcher {
         }
     }
 
+    /// Follows both keptOn and the mode, so a mode change while a screen is kept on applies at once.
+    private func holdAwake() {
+        let on = !keptOn.isEmpty && config.noScreenMode == .keepRunning
+        if on, awake == nil {
+            var id = IOPMAssertionID(0)
+            let type = kIOPMAssertionTypePreventUserIdleSystemSleep as CFString
+            let reason = "Switchboard keeps the Mac running with no screen" as CFString
+            if IOPMAssertionCreateWithName(type, IOPMAssertionLevel(kIOPMAssertionLevelOn), reason, &id) == kIOReturnSuccess {
+                awake = id
+            }
+        } else if !on, let id = awake {
+            IOPMAssertionRelease(id)
+            awake = nil
+        }
+    }
+
     private static func sleepNow() -> String? {
+        // ponytail: pmset, no public sleep-now API; IOPMSleepSystem if pmset goes away
         do {
             try Process.run(URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["sleepnow"])
             return nil

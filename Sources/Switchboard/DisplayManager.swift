@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import IOKit
 
 // Private CoreGraphics call that logically connects or disconnects a display.
 // It is not public API, so Switchboard cannot ship on the Mac App Store.
@@ -92,6 +93,16 @@ final class DisplayManager {
     /// No real display is on, but some that the app turned off can come back.
     var lostAllDisplays: Bool {
         !disabledByUs.isEmpty && !Self.list(CGGetActiveDisplayList).contains { !Self.isVirtual($0) }
+    }
+
+    // ponytail: undocumented AppleClamshellState key, no public lid API; drop the warning if it goes away
+    /// A Mac with no lid (a desktop) reads as open.
+    static func isLidClosed() -> Bool {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard root != 0 else { return false }
+        defer { IOObjectRelease(root) }
+        let state = IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)
+        return state?.takeRetainedValue() as? Bool ?? false
     }
 
     private static func uuid(for id: CGDirectDisplayID) -> String? {

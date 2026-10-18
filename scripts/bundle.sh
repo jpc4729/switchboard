@@ -28,6 +28,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>Switchboard</string>
     <key>CFBundleDisplayName</key>
     <string>Switchboard</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>io.github.jpc4729.switchboard</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>switchboard</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

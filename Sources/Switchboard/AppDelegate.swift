@@ -1,14 +1,16 @@
 import AppKit
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let switcher = Switcher()
+    let switcher = Switcher()
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
     // menuNeedsUpdate is synchronous, so the menu is built from this list, refreshed on launch,
     // after each action and on every screen change.
-    private var screens: [Display] = []
+    var screens: [Display] = []
     private var failed = false
     private var leaving = false
+    private var reading = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -21,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(screensChanged), name: NSWorkspace.didWakeNotification, object: nil
         )
         refresh()
         if switcher.config.screens.isEmpty { setUp() }
@@ -39,9 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 systemSymbolName: display.isBuiltin ? "laptopcomputer" : "display", accessibilityDescription: nil
             )
             let sub = NSMenu()
-            let choices: [(String, Config.Choice)] = [("Mac", .mac)]
-                + (screen?.devices ?? []).map { ($0.name, .device($0.input)) } + [("Off", .off)]
-            for (title, choice) in choices {
+            if screen == nil, !display.isBuiltin {
+                add("Set Up This Screen…", #selector(setUp), to: sub)
+                sub.addItem(.separator())
+            }
+            for (title, choice) in choices(for: display) {
                 let row = add(title, #selector(pick(_:)), to: sub)
                 row.representedObject = (display, choice)
                 row.state = choice == current ? .on : .off
@@ -60,9 +67,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             row.state = switcher.config.noScreenMode == value ? .on : .off
         }
         menu.addItem(withTitle: "When No Screen Is Left", action: nil, keyEquivalent: "").submenu = modes
+        let login = add("Open at Login", #selector(toggleLogin(_:)), to: menu)
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(.separator())
+        add("Open Window", #selector(openWindow), to: menu, key: "o")
         add("Set Up Screens…", #selector(setUp), to: menu, key: ",")
         add("Quit Switchboard", #selector(NSApplication.terminate(_:)), to: menu, key: "q").target = NSApp
+    }
+
+    // Reads each enabled, set-up screen's input so the checkmarks follow the screen's own button.
+    // ponytail: the menu is built first, so a change shows on the next open; set item states in place to fix.
+    func menuWillOpen(_ menu: NSMenu) {
+        guard !reading else { return }
+        let config = switcher.config
+        let reads = screens.filter { !$0.isBuiltin && $0.isEnabled }
+            .compactMap { d in config.screens[d.key].map { (d.id, d.key, $0) } }
+        reading = true
+        switcher.run({ reads.map { ($0.1, $0.2, DDC.readInput($0.0)) } }) { [weak self] inputs in
+            guard let self else { return }
+            reading = false
+            var choices = switcher.config.choices
+            var mac: [String] = []
+            for case let (key, screen, input?) in inputs {
+                if input == screen.computerInput {
+                    choices[key] = nil
+                    mac.append(key)
+                } else if screen.devices.contains(where: { $0.input == input }) { choices[key] = .device(input) }
+            }
+            switcher.config.choices = choices
+            switcher.backOnMac(mac)
+            updateIcon()
+        }
     }
 
     @discardableResult
@@ -73,17 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    @objc private func pick(_ sender: NSMenuItem) {
-        guard let (display, choice) = sender.representedObject as? (Display, Config.Choice) else { return }
-        switcher.switchScreen(display, to: choice, done: finish)
-    }
-
     @objc private func pickMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? Config.NoScreenMode else { return }
         switcher.config.noScreenMode = mode
     }
 
-    @objc private func backToComputer() {
+    @objc func backToComputer() {
         switcher.backToComputer(done: finish)
     }
 
@@ -91,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switcher.screensChanged(done: finish)
     }
 
-    private func finish(_ error: String?) {
+    func finish(_ error: String?) {
         failed = error != nil
         refresh()
         if let error { showError(error) }
@@ -125,9 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.title = away ? names.joined(separator: " · ") : ""
         button.setAccessibilityLabel(words)
         button.toolTip = words
+        ControlWindow.update(controlView())
     }
 
-    @objc private func setUp() {
+    @objc func setUp() {
         SetupWindow.show(switcher: switcher) { [weak self] in self?.refresh() }
     }
 
@@ -141,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateLater
     }
 
-    private func showError(_ message: String) {
+    func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "Switchboard"
         alert.informativeText = message
