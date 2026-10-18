@@ -1,0 +1,91 @@
+name: Monitor report
+description: Tell us if Switchboard can switch the input of your monitor.
+title: "[Monitor]: "
+labels: ["monitor"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Each report helps other people with the same monitor. Send a report when a monitor works too, not only when it fails.
+  - type: input
+    id: monitor
+    attributes:
+      label: Monitor brand and model
+      placeholder: "Samsung Odyssey G7 (LC32G75T)"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Switchboard version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.1"
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model and chip
+      placeholder: "Mac mini 2024, M4"
+    validations:
+      required: true
+  - type: input
+    id: connection
+    attributes:
+      label: Connection
+      description: The port on the Mac, the port on the monitor and the cable or adapter.
+      placeholder: "Mac HDMI port, monitor HDMI 1, HDMI cable"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - "Works: Switchboard switches the input and Back to Computer works"
+        - "Partly works: some inputs or Back to Computer do not work"
+        - "Does not work: the input does not change"
+    validations:
+      required: true
+  - type: dropdown
+    id: ddc
+    attributes:
+      label: Is DDC/CI on in the monitor's own menu?
+      options:
+        - "Yes"
+        - "No"
+        - "The monitor has no DDC/CI setting"
+        - "I do not know"
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Inputs and codes
+      description: Which inputs did you test? Write the input code that Setup read for each one, and if the switch worked.
+      placeholder: |
+        HDMI 1 (Mac): code 17, works
+        HDMI 2 (PS5): code 18, works
+        DisplayPort: code 15, does not switch
+    validations:
+      required: false
+  - type: textarea
+    id: settings
+    attributes:
+      label: Monitor settings
+      description: Did a monitor setting block DDC? For example Input Signal Plus or Dynamic Brightness on Samsung monitors.
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: More information
+      description: Error messages from Switchboard, or anything else that can help.
+    validations:
+      required: false

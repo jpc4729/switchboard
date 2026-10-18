@@ -15,6 +15,17 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Switchboard"
 
+# ponytail: logo.png has a white background; a transparent master can replace it later.
+ICONSET="$(mktemp -d build/icon.XXXXXX)/AppIcon.iconset"
+trap 'rm -rf "$(dirname "$ICONSET")"' EXIT
+mkdir "$ICONSET"
+for SIZE in 16 32 128 256 512; do
+    sips -z "$SIZE" "$SIZE" assets/logo.png --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null
+    sips -z $((SIZE * 2)) $((SIZE * 2)) assets/logo.png --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+install -m 755 scripts/switchboard "$APP/Contents/Resources/switchboard"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -24,6 +35,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>Switchboard</string>
     <key>CFBundleIdentifier</key>
     <string>io.github.jpc4729.switchboard</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleName</key>
     <string>Switchboard</string>
     <key>CFBundleDisplayName</key>
@@ -55,7 +68,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature so the app runs locally without a developer account.
-codesign --force --sign - "$APP"
+# Developer ID with hardened runtime when SIGN_IDENTITY is set, else ad-hoc so it runs without an account.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+else
+    codesign --force --sign - "$APP"
+fi
 
 echo "Built $APP"

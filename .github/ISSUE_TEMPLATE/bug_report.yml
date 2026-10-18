@@ -1,0 +1,84 @@
+name: Bug report
+description: Tell us about something in Switchboard that does not work.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for this report. Please give as much detail as you can, because the maintainers cannot test every Mac and monitor.
+        For a security problem, do not use this form. Read SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Switchboard version
+      description: The release that you installed, or the commit if you built from source.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.1"
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model and chip
+      placeholder: "MacBook Pro 14-inch 2023, M3 Pro"
+    validations:
+      required: true
+  - type: textarea
+    id: monitors
+    attributes:
+      label: Monitors
+      description: Give one line for each monitor. Write the brand and model, the port on the Mac, the port on the monitor and the cable or adapter.
+      placeholder: |
+        Samsung Odyssey G7: Mac USB-C port, monitor HDMI 1, USB-C to HDMI cable
+        Dell U2723QE: Mac Thunderbolt port, monitor USB-C, USB-C cable
+    validations:
+      required: true
+  - type: dropdown
+    id: ddc
+    attributes:
+      label: Is DDC/CI on in each monitor's own menu?
+      options:
+        - "Yes, on all monitors"
+        - "Only on some monitors"
+        - "No"
+        - "I do not know"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: What did you do? Give each step.
+      placeholder: |
+        1. Open the menu.
+        2. Select PS5 for Odyssey G7.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What did you expect to occur?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: What occurred? Copy the error message from Switchboard, if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: More information
+      description: Anything else that can help, for example a crash log or a screen recording.
+    validations:
+      required: false

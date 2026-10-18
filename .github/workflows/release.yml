@@ -1,0 +1,312 @@
+name: Release
+
+# Tag pushes (v*) build, publish the GitHub release and bump the tap.
+# workflow_dispatch is a dry run: it builds and uploads the zip as an artifact only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, without the leading v (for example 0.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Queue releases one at a time so two tags never race on the tap.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha256: ${{ steps.zip.outputs.sha256 }}
+      notarized: ${{ steps.mode.outputs.notarized }}
+    env:
+      DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+      DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+      DEVELOPER_ID_NAME: ${{ secrets.DEVELOPER_ID_NAME }}
+      NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Version '$VERSION' is not X.Y.Z or X.Y.Z-suffix"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Signing needs all three Developer ID secrets; notarizing needs signing plus all three notary secrets.
+      # A partial set fails instead of silently shipping a weaker build.
+      - name: Choose signing mode
+        id: mode
+        run: |
+          sign=0
+          for v in "$DEVELOPER_ID_P12_BASE64" "$DEVELOPER_ID_P12_PASSWORD" "$DEVELOPER_ID_NAME"; do
+            [[ -n "$v" ]] && sign=$((sign + 1))
+          done
+          notary=0
+          for v in "$NOTARY_KEY_P8_BASE64" "$NOTARY_KEY_ID" "$NOTARY_ISSUER_ID"; do
+            [[ -n "$v" ]] && notary=$((notary + 1))
+          done
+          if (( sign != 0 && sign != 3 )); then
+            echo "::error::Set all of DEVELOPER_ID_P12_BASE64, DEVELOPER_ID_P12_PASSWORD, DEVELOPER_ID_NAME or none"
+            exit 1
+          fi
+          if (( notary != 0 && notary != 3 )); then
+            echo "::error::Set all of NOTARY_KEY_P8_BASE64, NOTARY_KEY_ID, NOTARY_ISSUER_ID or none"
+            exit 1
+          fi
+          if (( notary == 3 && sign != 3 )); then
+            echo "::error::Notarizing needs the Developer ID secrets too"
+            exit 1
+          fi
+          if (( sign == 3 )); then
+            echo "SIGN=true" >> "$GITHUB_ENV"
+            echo "Signing with Developer ID"
+          else
+            echo "::notice::No Developer ID secrets; building with an ad hoc signature"
+          fi
+          if (( notary == 3 )); then
+            echo "NOTARIZE=true" >> "$GITHUB_ENV"
+            echo "notarized=true" >> "$GITHUB_OUTPUT"
+            echo "Notarizing with notarytool"
+          else
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No notary secrets; the build will not be notarized"
+          fi
+
+      - name: Import Developer ID into a temporary keychain
+        if: env.SIGN == 'true'
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          P12="$RUNNER_TEMP/developer_id.p12"
+          printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 --decode > "$P12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          rm -f "$P12"
+          # Put the temp keychain first in the search list, keeping the existing ones.
+          existing=()
+          while IFS= read -r kc; do
+            kc="${kc#"${kc%%[![:space:]]*}"}"
+            existing+=("${kc//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${existing[@]}"
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep -qF "$DEVELOPER_ID_NAME" || {
+            echo "::error::DEVELOPER_ID_NAME does not match an identity in the imported certificate"
+            exit 1
+          }
+
+      - name: Bundle app
+        env:
+          SIGN_IDENTITY: ${{ env.SIGN == 'true' && env.DEVELOPER_ID_NAME || '' }}
+        run: ./scripts/bundle.sh
+
+      - name: Verify signature
+        run: |
+          codesign --verify --deep --strict --verbose=2 build/Switchboard.app
+          plutil -lint build/Switchboard.app/Contents/Info.plist
+
+      - name: Zip app
+        run: ditto -c -k --keepParent build/Switchboard.app "build/Switchboard-$VERSION.zip"
+
+      - name: Notarize and staple
+        if: env.NOTARIZE == 'true'
+        run: |
+          KEY="$RUNNER_TEMP/notary_key.p8"
+          RESULT="$RUNNER_TEMP/notary_result.json"
+          printf '%s' "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$KEY"
+          xcrun notarytool submit "build/Switchboard-$VERSION.zip" \
+            --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            --wait --timeout 30m --output-format json > "$RESULT" || true
+          status="$(plutil -extract status raw -o - "$RESULT" 2>/dev/null || echo unknown)"
+          id="$(plutil -extract id raw -o - "$RESULT" 2>/dev/null || echo "")"
+          echo "Notarization $id: $status"
+          if [[ "$status" != "Accepted" ]]; then
+            if [[ -n "$id" ]]; then
+              xcrun notarytool log "$id" --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" || true
+            fi
+            rm -f "$KEY"
+            echo "::error::Notarization failed with status $status"
+            exit 1
+          fi
+          rm -f "$KEY"
+          xcrun stapler staple build/Switchboard.app
+          xcrun stapler validate build/Switchboard.app
+          # Zip again so the shipped app carries the stapled ticket.
+          rm -f "build/Switchboard-$VERSION.zip"
+          ditto -c -k --keepParent build/Switchboard.app "build/Switchboard-$VERSION.zip"
+
+      - name: Gatekeeper check
+        if: env.NOTARIZE == 'true'
+        run: spctl -a -vv build/Switchboard.app
+
+      - name: Write checksum
+        id: zip
+        working-directory: build
+        run: |
+          shasum -a 256 "Switchboard-$VERSION.zip" > "Switchboard-$VERSION.zip.sha256"
+          cat "Switchboard-$VERSION.zip.sha256"
+          echo "sha256=$(cut -d ' ' -f 1 "Switchboard-$VERSION.zip.sha256")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Switchboard-${{ steps.version.outputs.version }}
+          path: |
+            build/Switchboard-${{ steps.version.outputs.version }}.zip
+            build/Switchboard-${{ steps.version.outputs.version }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove temporary keychain and keys
+        if: always()
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          if [[ -f "$KEYCHAIN" ]]; then
+            security delete-keychain "$KEYCHAIN"
+          fi
+          rm -f "$RUNNER_TEMP/developer_id.p12" "$RUNNER_TEMP/notary_key.p8"
+
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      NOTARIZED: ${{ needs.build.outputs.notarized }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Switchboard-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Check downloaded checksum
+        working-directory: dist
+        run: shasum -a 256 -c "Switchboard-$VERSION.zip.sha256"
+
+      - name: Write release notes
+        run: |
+          {
+            echo "## Install"
+            echo
+            echo "Homebrew:"
+            echo
+            echo '```sh'
+            echo "brew install --cask jpc4729/tap/switchboard"
+            echo '```'
+            echo
+            echo "Or download \`Switchboard-$VERSION.zip\` below, unzip it and move Switchboard.app to /Applications."
+            echo
+            echo "## First launch"
+            echo
+            if [[ "$NOTARIZED" == "true" ]]; then
+              echo "This build is signed with a Developer ID and notarized by Apple, so it opens normally."
+            else
+              echo "This build is not notarized by Apple. On macOS 15 and later, open the app once, then go to"
+              echo "System Settings > Privacy & Security > Open Anyway. Or run:"
+              echo
+              echo '```sh'
+              echo "xattr -dr com.apple.quarantine /Applications/Switchboard.app"
+              echo '```'
+            fi
+          } > "$RUNNER_TEMP/release-body.md"
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: v${{ needs.build.outputs.version }}
+          body_path: ${{ runner.temp }}/release-body.md
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.build.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/Switchboard-${{ needs.build.outputs.version }}.zip
+            dist/Switchboard-${{ needs.build.outputs.version }}.zip.sha256
+
+  tap:
+    needs: [build, release]
+    # ponytail: prereleases do not bump the tap; users get stable versions only.
+    if: github.event_name == 'push' && !contains(needs.build.outputs.version, '-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      VERSION: ${{ needs.build.outputs.version }}
+      SHA256: ${{ needs.build.outputs.sha256 }}
+    steps:
+      - name: Skip without tap token
+        if: env.HOMEBREW_TAP_TOKEN == ''
+        run: echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the tap bump"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        with:
+          repository: jpc4729/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render cask
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Bad sha256 '$SHA256'"; exit 1; }
+          mkdir -p tap/Casks
+          sed -e "s/^  version \".*\"\$/  version \"$VERSION\"/" \
+              -e "s/^  sha256 \".*\"\$/  sha256 \"$SHA256\"/" \
+              packaging/homebrew/switchboard.rb > tap/Casks/switchboard.rb
+          if [[ "$(grep -cxF "  version \"$VERSION\"" tap/Casks/switchboard.rb)" != 1 ]] ||
+             [[ "$(grep -cxF "  sha256 \"$SHA256\"" tap/Casks/switchboard.rb)" != 1 ]]; then
+            echo "::error::Cask template did not render the version and sha256 lines exactly once"
+            exit 1
+          fi
+          ruby -c tap/Casks/switchboard.rb
+
+      - name: Commit and push cask
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        working-directory: tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/switchboard.rb
+          if git diff --cached --quiet; then
+            echo "::notice::Tap already has v$VERSION"
+            exit 0
+          fi
+          git commit -m "chore(switchboard): update to v$VERSION"
+          git push origin HEAD

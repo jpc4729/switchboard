@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: swift build
+
+      - name: Build tests
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test
+
+      - name: Bundle app
+        run: ./scripts/bundle.sh
+
+      - name: Lint Info.plist
+        run: plutil -lint build/Switchboard.app/Contents/Info.plist
+
+      # ponytail: install shellcheck only if the runner image lacks it.
+      - name: Lint shell scripts
+        run: |
+          command -v shellcheck >/dev/null || brew install shellcheck
+          shellcheck scripts/*.sh scripts/switchboard

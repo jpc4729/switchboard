@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Command-line remote for Switchboard: sends switchboard:// links to the running app.
+set -euo pipefail
+
+usage() {
+    cat <<'HELP'
+Usage:
+  switchboard back                    Bring every screen back to this Mac.
+  switchboard switch <screen> <to>    Switch a screen to "mac", "off" or a device name.
+  switchboard --help                  Show this help.
+
+Options:
+  --print    Print the link instead of opening it.
+
+Put names with spaces in quotes, for example: switchboard switch "Odyssey G7" PS5
+HELP
+}
+
+fail() { echo "switchboard: $1" >&2; usage >&2; exit 64; }
+
+# JavaScript's encodeURIComponent ships with every Mac; argv keeps names UTF-8 exact and never runs them as code.
+encode() { osascript -l JavaScript -e 'function run(argv) { return encodeURIComponent(argv[0]) }' -- "$1"; }
+
+PRINT=0
+while [[ $# -gt 0 && "$1" == -* ]]; do
+    case "$1" in
+        -h | --help) usage; exit 0 ;;
+        --print) PRINT=1; shift ;;
+        --) shift; break ;;
+        *) fail "unknown option: $1" ;;
+    esac
+done
+
+case "${1:-}" in
+    back) [[ $# -eq 1 ]] || fail "back takes no arguments"
+        URL="switchboard://back" ;;
+    switch) [[ $# -eq 3 && -n "$2" && -n "$3" ]] || fail "switch needs a screen and a target"
+        SCREEN="$(encode "$2")"; TO="$(encode "$3")"
+        URL="switchboard://switch?screen=$SCREEN&to=$TO" ;;
+    "") fail "missing command" ;;
+    *) fail "unknown command: $1" ;;
+esac
+
+if [[ $PRINT -eq 1 ]]; then
+    echo "$URL"
+else
+    open -g "$URL"
+fi

@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an idea for Switchboard.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us the problem first, then your idea. Switchboard is a small app, so the maintainer can say no to a good idea. If so, we tell you why.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What do you try to do, and what stops you now?
+      placeholder: "I switch two monitors to my PC each day, and I must select each one in the menu."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Your idea
+      description: How can Switchboard solve this problem?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other solutions
+      description: What else did you try? For example a link from Shortcuts or the `switchboard` command.
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Before you send
+      options:
+        - label: I looked for an issue about the same problem and did not find one.
+          required: true
