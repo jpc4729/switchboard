@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-18
+
 ### Added
 
 - Menu bar app with no Dock icon.
@@ -27,3 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI workflow that builds, tests and lints each push to main and each pull request.
 - Release workflow that publishes `Switchboard-X.Y.Z.zip` for a `v*` tag. Signing and notarization turn on only when the Developer ID secrets exist.
 - Homebrew cask template for the `jpc4729/tap` tap.
+
+[Unreleased]: https://github.com/jpc4729/switchboard/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jpc4729/switchboard/releases/tag/v0.1.0
