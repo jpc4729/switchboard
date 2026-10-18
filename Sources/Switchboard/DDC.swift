@@ -7,6 +7,8 @@ import IOKit
 // (https://github.com/MonitorControl/MonitorControl/blob/main/MonitorControl/Support/Arm64DDC.swift);
 // the display-to-service lookup follows m1ddc (https://github.com/waydabber/m1ddc/blob/main/sources/ioregistry.m).
 // ponytail: Apple Silicon only; Intel Macs need the IOFramebuffer I2C path (IOFBCopyI2CInterfaceForBus), add it in a separate branch if Intel matters.
+// ponytail: @_silgen_name calls C with the Swift calling convention, which matches for these plain
+// arguments; move the private calls to a C target with a module map if one takes a struct or breaks.
 
 @_silgen_name("IOAVServiceCreateWithService")
 private func IOAVServiceCreateWithService(_ allocator: CFAllocator?, _ service: io_service_t) -> Unmanaged<CFTypeRef>?
@@ -21,6 +23,15 @@ private let createInfoDictionary = dlsym(dlopen("/System/Library/Frameworks/Core
 /// Blocking calls (up to ~0.5 s); run them off the main thread.
 enum DDC {
     private static let chip: UInt8 = 0x37, dataAddress: UInt8 = 0x51, inputCode: UInt8 = 0x60
+
+    /// False in the x86_64 slice of the universal build: the IOAVService path is on Apple silicon only.
+    static let isSupported: Bool = {
+        #if arch(arm64)
+        true
+        #else
+        false
+        #endif
+    }()
 
     /// Current input source, or nil when the display has no DDC service or does not answer.
     // ponytail: returns the low byte only and ignores LG's alternate 0xF4/0x50 input path; read the full UInt16 if a monitor needs it.
@@ -50,7 +61,7 @@ enum DDC {
             if !reply.isEmpty {
                 usleep(50_000)
                 ok = IOAVServiceReadI2C(service, UInt32(chip), 0, &reply, UInt32(reply.count)) == kIOReturnSuccess
-                    && reply.dropLast().reduce(0x50, ^) == reply.last
+                    && isReply(reply, to: send[0])
             }
             if ok { return true }
             usleep(20_000)
@@ -58,11 +69,18 @@ enum DDC {
         return false
     }
 
+    /// A Get VCP reply that reports the value of `code`: a valid checksum, opcode 0x02, result 0 and the
+    /// same VCP code. A busy monitor's null message (6E 80 BE 00…) also has a valid checksum.
+    static func isReply(_ reply: [UInt8], to code: UInt8) -> Bool {
+        reply.count == 11 && reply.dropLast().reduce(0x50, ^) == reply.last
+            && reply[2] == 0x02 && reply[3] == 0 && reply[4] == code
+    }
+
     /// After m1ddc: find the framebuffer (MonitorControl's class names) whose IOService path is the
     /// display's IODisplayLocation, then take the next external DCPAVServiceProxy after it in the registry.
     // ponytail: walks the IORegistry on every call and ignores MCDP29xx adapters (chip 0xB7); cache per display ID or add the chip check if needed.
     private static func service(for id: CGDirectDisplayID) -> CFTypeRef? {
-        guard let info = createInfoDictionary?(id)?.takeRetainedValue() as? [String: Any],
+        guard isSupported, let info = createInfoDictionary?(id)?.takeRetainedValue() as? [String: Any],
               let location = info["IODisplayLocation"] as? String else { return nil }
         let root = IORegistryGetRootEntry(kIOMainPortDefault)
         defer { IOObjectRelease(root) }

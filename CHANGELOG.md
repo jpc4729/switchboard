@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- An alert no longer stops ⌃⌥⌘B, the menu bar state and Quit from finishing while it is open.
+- A display that turns off a moment after the change is now saved as turned off.
+- At launch, Switchboard checks the screens, so screens that a crash left off come back when no screen is on.
+- Screens kept on while they show a device are saved, so Keep Running still holds the Mac awake after a relaunch. Back to Computer and Quit forget a kept screen that is no longer connected.
+- Display IDs saved before a restart are ignored, so no unknown display shows in the menu.
+- A DDC reply that has no input value, such as a busy monitor's null message, is no longer read as input 0.
+- The warning icon stays after a failed switch until the next action.
+- The 30-second input check also runs while the menu or an alert is open.
+- Setup's Test no longer makes Back to Computer wait 5 seconds, and one Test runs at a time.
+- Sleep reports an error when `pmset` fails.
+- A prerelease build has only numbers and dots in `CFBundleVersion`.
+
+### Changed
+
+- ⌃⌥⌘B is registered exclusively. The menu says that another app uses it only when that app holds it exclusively, and the lid alert tells you what to do if ⌃⌥⌘B does nothing.
+- On an Intel Mac, a switch to a device says that it needs Apple silicon.
+- Switchboard saves the config only when it changes, and checks the screens once per burst of screen changes.
+
 ## [0.1.0] - 2026-10-18
 
 ### Added

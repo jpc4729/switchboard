@@ -4,6 +4,8 @@ import IOKit
 
 // Private CoreGraphics call that logically connects or disconnects a display.
 // It is not public API, so Switchboard cannot ship on the Mac App Store.
+// ponytail: @_silgen_name calls C with the Swift calling convention, which matches for these plain
+// arguments; move the private calls to a C target with a module map if one takes a struct or breaks.
 @_silgen_name("CGSConfigureDisplayEnabled")
 private func CGSConfigureDisplayEnabled(_ config: CGDisplayConfigRef, _ display: CGDirectDisplayID, _ enabled: Bool) -> CGError
 
@@ -19,25 +21,38 @@ struct Display {
 /// Not thread safe: callers run every call on one serial queue.
 final class DisplayManager {
     private static let disabledKey = "disabledDisplayIDs"
+    private static let bootKey = "disabledDisplayIDsBoot"
 
     // A disabled display can drop out of the system lists, so remember every
     // display we have seen, with its name, to offer it again in the menu.
     private var known: [CGDirectDisplayID: String] = [:]
     // ID to UUID, saved: the UUID lookup can fail once the display is off, also after a crash.
+    // ponytail: never pruned, about 50 bytes per display ever seen; drop entries not seen for months if it grows.
     private var keys = UserDefaults.standard.dictionary(forKey: "displayKeys") as? [String: String] ?? [:] {
         didSet { UserDefaults.standard.set(keys, forKey: "displayKeys") }
     }
     // Saved so a crash or force-quit still lets the next launch turn them back on.
     private var disabledByUs: Set<CGDirectDisplayID> {
-        didSet { UserDefaults.standard.set(disabledByUs.map { Int($0) }, forKey: Self.disabledKey) }
+        didSet { saveDisabled() }
     }
     // Displays whose enable failed once in this run.
     private var failedOnce: Set<CGDirectDisplayID> = []
 
     init() {
-        let saved = UserDefaults.standard.array(forKey: Self.disabledKey) as? [Int] ?? []
+        // A restart turns every display back on (.forSession) and can give them new IDs, so IDs saved
+        // before this boot are dropped. A missing boot value is from 0.1.0 and is trusted.
+        let savedBoot = UserDefaults.standard.string(forKey: Self.bootKey)
+        let saved = savedBoot == nil || savedBoot == Self.bootSession()
+            ? UserDefaults.standard.array(forKey: Self.disabledKey) as? [Int] ?? [] : []
         let active = Set(Self.list(CGGetActiveDisplayList))
         disabledByUs = Set(saved.map { CGDirectDisplayID($0) }).subtracting(active)
+        // didSet does not run in init: save now, so the saved IDs carry this boot.
+        saveDisabled()
+    }
+
+    private func saveDisabled() {
+        UserDefaults.standard.set(disabledByUs.map { Int($0) }, forKey: Self.disabledKey)
+        UserDefaults.standard.set(Self.bootSession(), forKey: Self.bootKey)
     }
 
     /// NSScreen is main-thread only: read the names there, then pass them to `remember`.
@@ -83,8 +98,14 @@ final class DisplayManager {
             }
         }
         // Every call can report an error (the commit even returns 1001) when the change worked,
-        // so only the real state counts.
-        let ok = (CGDisplayIsActive(id) != 0) == enabled
+        // so only the real state counts, and it can change a moment after the commit.
+        // ponytail: waits up to 1 s for the state; tune it on real monitors.
+        var ok = false
+        for _ in 0..<10 {
+            ok = (CGDisplayIsActive(id) != 0) == enabled
+            if ok { break }
+            usleep(100_000)
+        }
         if ok {
             if enabled { disabledByUs.remove(id) } else { disabledByUs.insert(id) }
             failedOnce.remove(id)
@@ -92,6 +113,7 @@ final class DisplayManager {
             // ponytail: an enable that fails twice in one run most likely means the display was unplugged,
             // so it is forgotten instead of reported forever; replugging or a restart brings it back.
             // One failure keeps it saved, so the next try, also after a relaunch, can still bring it back.
+            // If a monitor that is slow to wake gets forgotten, forget only when its UUID is gone from the IORegistry.
             disabledByUs.remove(id)
         }
         return ok
@@ -110,6 +132,15 @@ final class DisplayManager {
         defer { IOObjectRelease(root) }
         let state = IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)
         return state?.takeRetainedValue() as? Bool ?? false
+    }
+
+    /// A new value at each boot, so saved display IDs can be matched to the boot they came from.
+    private static func bootSession() -> String {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        var value = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &value, &size, nil, 0) == 0 else { return "" }
+        return String(decoding: value.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
     }
 
     private static func uuid(for id: CGDirectDisplayID) -> String? {

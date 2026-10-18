@@ -11,8 +11,12 @@ extension AppDelegate {
     /// queue, so it sees every switch picked before it.
     func pick(_ display: Display, _ choice: Config.Choice) {
         switcher.leavesClosedLidRunning(display, to: choice) { [weak self] closedLid in
-            guard let self, !closedLid || confirmLidClosed() else { return }
-            switcher.switchScreen(display, to: choice, done: finish)
+            guard let self else { return }
+            guard closedLid else { return switcher.switchScreen(display, to: choice, done: finish) }
+            confirmLidClosed { [weak self] in
+                guard let self else { return }
+                switcher.switchScreen(display, to: choice, done: finish)
+            }
         }
     }
 
@@ -48,18 +52,22 @@ extension AppDelegate {
         )
     }
 
-    /// Asks first when the switch would leave a closed-lid Mac running with no screen. False means cancel.
-    private func confirmLidClosed() -> Bool {
+    /// Asks first when the switch would leave a closed-lid Mac running with no screen. Runs `then` on Continue.
+    private func confirmLidClosed(then: @escaping @MainActor () -> Void) {
+        // Carbon reports only an app that holds ⌃⌥⌘B exclusively, so the text also covers one it cannot see.
         let back = hotKey == nil
             ? "Another app uses ⌃⌥⌘B, so choose the Mac with the screen’s own button to come back."
-            : "Press ⌃⌥⌘B to come back."
-        let alert = NSAlert()
-        alert.messageText = "The lid is closed"
-        alert.informativeText = "No screen will show the Mac, and the Mac keeps running. " + back
-        alert.addButton(withTitle: "Continue")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
+            : "Press ⌃⌥⌘B to come back. If it does nothing, another app uses it: choose the Mac with the screen’s own button."
+        runAlert({
+            let alert = NSAlert()
+            alert.messageText = "The lid is closed"
+            alert.informativeText = "No screen will show the Mac, and the Mac keeps running. " + back
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Cancel")
+            return alert
+        }, then: { _, response in
+            if response == .alertFirstButtonReturn { then() }
+        })
     }
 
     @objc func toggleLogin(_ sender: NSMenuItem) {
@@ -99,20 +107,23 @@ extension AppDelegate {
     }
 
     /// Any app or web page can open a link, so a link that turns a screen off or switches it away asks first.
-    /// False means cancel. The names are the user's own, from Setup, never text from the link.
-    private func confirmLink(_ action: String) -> Bool {
-        guard switcher.config.askBeforeLinks else { return true }
-        let alert = NSAlert()
-        alert.messageText = "Allow this link?"
-        alert.informativeText = "A link asks Switchboard to \(action). Links can come from any app or web page."
-        alert.addButton(withTitle: "Allow")
-        alert.addButton(withTitle: "Cancel")
-        alert.showsSuppressionButton = true
-        alert.suppressionButton?.title = "Do not ask again"
-        NSApp.activate(ignoringOtherApps: true)
-        let allowed = alert.runModal() == .alertFirstButtonReturn
-        if allowed, alert.suppressionButton?.state == .on { switcher.config.askBeforeLinks = false }
-        return allowed
+    /// Runs `then` on Allow. The names are the user's own, from Setup, never text from the link.
+    private func confirmLink(_ action: String, then: @escaping @MainActor () -> Void) {
+        guard switcher.config.askBeforeLinks else { return then() }
+        runAlert({
+            let alert = NSAlert()
+            alert.messageText = "Allow this link?"
+            alert.informativeText = "A link asks Switchboard to \(action). Links can come from any app or web page."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Cancel")
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Do not ask again"
+            return alert
+        }, then: { [weak self] alert, response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            if alert.suppressionButton?.state == .on { switcher.config.askBeforeLinks = false }
+            then()
+        })
     }
 
     private func switchScreen(named name: String, to target: String) {
@@ -124,18 +135,16 @@ extension AppDelegate {
         let screen = config.screens[display.key]
         let screenName = screen?.name ?? display.name
         let choice: Config.Choice
+        let action: String
         switch target.lowercased() {
-        case "mac": choice = .mac
-        case "off":
-            guard confirmLink("turn “\(screenName)” off") else { return }
-            choice = .off
+        case "mac": return pick(display, .mac)
+        case "off": (choice, action) = (.off, "turn “\(screenName)” off")
         default:
             guard let device = screen?.devices.first(where: { same($0.name, target) }) else {
                 return showError("“\(screenName)” has no device with the name in the link.")
             }
-            guard confirmLink("switch “\(screenName)” to \(device.name)") else { return }
-            choice = .device(device.input)
+            (choice, action) = (.device(device.input), "switch “\(screenName)” to \(device.name)")
         }
-        pick(display, choice)
+        confirmLink(action) { [weak self] in self?.pick(display, choice) }
     }
 }

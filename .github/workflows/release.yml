@@ -259,7 +259,7 @@ jobs:
 
   tap:
     needs: [build, release]
-    # ponytail: prereleases do not bump the tap; users get stable versions only.
+    # ponytail: prereleases do not bump the tap; users get stable versions only. Add a separate beta cask if users ask for prereleases.
     if: github.event_name == 'push' && !contains(needs.build.outputs.version, '-')
     runs-on: ubuntu-latest
     timeout-minutes: 10

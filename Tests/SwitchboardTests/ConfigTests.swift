@@ -31,5 +31,14 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.screens["A"]?.devices.count, 0)
         XCTAssertEqual(config.noScreenMode, .sleep)
         XCTAssertEqual(config.choices.count, 0)
+        XCTAssertEqual(config.kept, [])
+    }
+
+    /// Kept screens survive a save and a load, so a relaunch still holds the Mac awake.
+    func testKeepsKeptScreens() throws {
+        var config = Config()
+        config.kept = ["A"]
+        let saved = String(decoding: try JSONEncoder().encode(config), as: UTF8.self)
+        XCTAssertEqual(try decode(saved).kept, ["A"])
     }
 }

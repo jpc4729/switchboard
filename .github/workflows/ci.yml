@@ -35,7 +35,7 @@ jobs:
       - name: Lint Info.plist
         run: plutil -lint build/Switchboard.app/Contents/Info.plist
 
-      # ponytail: install shellcheck only if the runner image lacks it.
+      # ponytail: install shellcheck only if the runner image lacks it; pin a version if a new one breaks CI.
       - name: Lint shell scripts
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck

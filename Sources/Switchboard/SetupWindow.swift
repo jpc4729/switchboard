@@ -10,7 +10,7 @@ enum SetupWindow {
     static func show(switcher: Switcher, onSave: @escaping () -> Void) {
         switcher.displays { list in
             window?.close()
-            // ponytail: built-in screens have no inputs to learn, so they are not listed.
+            // Built-in screens have no inputs to learn, so they are not listed.
             let rows = list.filter { !$0.isBuiltin }.map { display -> SetupRow in
                 let saved = switcher.config.screens[display.key]
                 var row = SetupRow(
@@ -40,7 +40,7 @@ enum SetupWindow {
                     (window, closing) = (nil, nil)
                 }
             }
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.bringToFront()
             new.makeKeyAndOrderFront(nil)
         }
     }
@@ -80,6 +80,7 @@ private struct SetupView: View {
     // Test and Save wait for the Mac's input to be read, so Test switches back to the right input
     // and Save does not keep the default.
     @State private var ready = false
+    @State private var testing = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -95,7 +96,7 @@ private struct SetupView: View {
                             HStack {
                                 let name = Binding { row.devices[input.code] ?? "" } set: { $row.wrappedValue.devices[input.code] = $0 }
                                 TextField(input.label, text: name, prompt: Text("Not used"))
-                                Button("Test") { test(row, input.code) }.disabled(!ready)
+                                Button("Test") { test(row, input.code) }.disabled(!ready || testing)
                             }
                         }
                         HStack {
@@ -148,13 +149,19 @@ private struct SetupView: View {
     private func test(_ row: SetupRow, _ input: UInt8) {
         let (id, mac, name) = (row.id, row.mac, row.name)
         message = "Testing “\(name)”. The Mac comes back in 5 seconds."
-        switcher.run({ _ -> String in
-            // Waits and switches back even when the write reports a failure: the monitor may have taken it.
-            let switched = DDC.writeInput(input, to: id)
-            sleep(5)
-            guard DDC.writeInput(mac, to: id) else { return Switcher.didNotSwitchBack(name) }
-            return switched ? "“\(name)” is back on the Mac." : Switcher.didNotSwitch(name)
-        }) { message = $0 }
+        testing = true
+        switcher.run({ _ in DDC.writeInput(input, to: id) }) { switched in
+            // Waits on main, not on the queue, so Back to Computer does not wait behind a test. Switches
+            // back even when the write reports a failure: the monitor may have taken it.
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                switcher.run({ _ in DDC.writeInput(mac, to: id) }) { back in
+                    testing = false
+                    guard back else { return message = Switcher.didNotSwitchBack(name) }
+                    message = switched ? "“\(name)” is back on the Mac." : Switcher.didNotSwitch(name)
+                }
+            }
+        }
     }
 
     private func save() {

@@ -28,7 +28,7 @@ enum ControlWindow {
             }
         }
         update(view)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.bringToFront()
         window?.makeKeyAndOrderFront(nil)
     }
 
@@ -72,7 +72,8 @@ struct ControlView: View {
             }
             .padding()
         }
-        // ponytail: fixed height fits about four screens; the form scrolls past that.
+        // ponytail: fixed height fits about four screens and the form scrolls past that; size it to the
+        // rows if users have more screens.
         .frame(width: 420, height: 300)
     }
 }

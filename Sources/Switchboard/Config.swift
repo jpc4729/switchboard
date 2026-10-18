@@ -2,15 +2,15 @@ import Foundation
 import os
 
 /// Everything the user set up, saved as one JSON value in UserDefaults.
-struct Config: Codable {
+struct Config: Codable, Equatable {
     enum NoScreenMode: String, Codable { case sleep, keepRunning }
     /// What a screen shows. A device is named by its input value on that screen.
     enum Choice: Codable, Hashable { case mac, device(UInt8), off }
-    struct Device: Codable {
+    struct Device: Codable, Equatable {
         var name: String
         var input: UInt8
     }
-    struct Screen: Codable {
+    struct Screen: Codable, Equatable {
         var name: String
         var computerInput: UInt8
         var devices: [Device] = []
@@ -29,6 +29,9 @@ struct Config: Codable {
     var choices: [String: Choice] = [:]
     /// Links that turn a screen off or switch it to a device ask first.
     var askBeforeLinks = true
+    /// Keys of the screens kept on while they show a device. Saved so a relaunch still holds the Mac
+    /// awake and still does not bring them back on its own.
+    var kept: Set<String> = []
 
     func choice(for key: String) -> Choice {
         choices[key] ?? .mac
@@ -62,6 +65,7 @@ extension Config {
         if let mode = try? values.decodeIfPresent(NoScreenMode.self, forKey: .noScreenMode) { noScreenMode = mode }
         if let choices = try? values.decodeIfPresent([String: Choice].self, forKey: .choices) { self.choices = choices }
         if let ask = try? values.decodeIfPresent(Bool.self, forKey: .askBeforeLinks) { askBeforeLinks = ask }
+        if let kept = try? values.decodeIfPresent(Set<String>.self, forKey: .kept) { self.kept = kept }
     }
 }
 

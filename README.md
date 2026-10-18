@@ -35,7 +35,7 @@ The maintainers run commands through a `quiet` wrapper. It is optional, and the 
 
 ## First launch
 
-The app is not notarized, because notarization needs a paid Apple Developer ID. macOS blocks it at the first launch. To open it:
+A release is notarized only when it is built with a paid Apple Developer ID. The release notes say if a release is notarized. macOS blocks a release that is not notarized at the first launch. To open it:
 
 1. Open Switchboard once. macOS stops it.
 2. Go to System Settings > Privacy & Security.
@@ -57,7 +57,7 @@ A build from source is not quarantined, so it opens without these steps.
 - Any number of screens and devices. You give each one a name.
 - For each screen, the menu shows the Mac, each device and Off. A checkmark shows the current choice.
 - When a screen shows a device, the Mac stops using that screen, so your windows move to the screens that you can see.
-- Back to Computer turns all screens on again and switches each one back to the Mac. The shortcut is ⌃⌥⌘B. Quit, logout and restart also do this. If another app uses ⌃⌥⌘B, the menu says so, and you use the menu.
+- Back to Computer turns all screens on again and switches each one back to the Mac. The shortcut is ⌃⌥⌘B. Quit, logout and restart also do this. If another app holds ⌃⌥⌘B exclusively, the menu says so. macOS does not tell Switchboard about all other apps that use the shortcut, so if ⌃⌥⌘B does nothing, use the menu.
 - The last screen always stays on. You select what the Mac does then: sleep or keep running. Keep Running stops the Mac from going to sleep while no screen shows it. If the lid is closed, Switchboard asks before it does this.
 - The menu bar shows the device names when a screen is away, and a warning icon when an action failed. Errors are in plain words. When a screen does not switch, the message tells you what to try.
 - When you open the menu, Switchboard asks each screen which input it shows, so the checkmarks follow the screen's own button too. A change shows the next time you open the menu. While the last screen shows a device, Switchboard asks it every 30 seconds, so when you select the Mac with the screen's own button, Keep Running stops holding the Mac awake.
@@ -73,7 +73,7 @@ A build from source is not quarantined, so it opens without these steps.
 ## Requirements
 
 - macOS 13 or later.
-- Apple Silicon. Intel Macs are not supported for input switching.
+- Apple Silicon. Intel Macs are not supported for input switching. On an Intel Mac, a switch to a device says that it needs Apple silicon.
 - Monitors with DDC/CI on. Most monitors have this setting in their own menu.
 
 ## Command line
@@ -115,7 +115,9 @@ Switchboard works offline. It collects nothing and sends nothing.
 - A switch sends DDC first. If DDC fails, nothing changes.
 - Some monitors do not accept DDC on an input that is not shown. Then Back to Computer turns the screen on again in macOS, and you select the Mac with the screen's own button. The order does not matter.
 - The change uses the `.forSession` scope, so a logout or a restart turns all displays on again.
-- A disabled display goes out of the system display lists. Switchboard saves the IDs and UUIDs of the displays that it disabled, so that it can turn them on again with their settings, also after a crash.
+- A disabled display goes out of the system display lists. Switchboard saves the IDs and UUIDs of the displays that it disabled, so that it can turn them on again with their settings, also after a crash. At launch it checks the screens the same as after a screen change. A restart turns all displays on again and can change their IDs, so Switchboard ignores the IDs that it saved before the restart.
+- Switchboard saves which screens it keeps on while they show a device. After a relaunch, Keep Running still holds the Mac awake, and Switchboard still asks those screens for their input every 30 seconds. Back to Computer, and Quit, forget a kept screen that is no longer connected.
+- One screen change sends many notifications. Switchboard checks the screens once, 1 second after the last one.
 - macOS can report an error for a display change that worked. Switchboard reads the real display state and reports an error only when the state did not change.
 - Switchboard never disables the last real screen. It keeps that screen on and, if you selected Sleep, puts the Mac to sleep.
 - If no real screen is left on, for example after you disconnect a monitor, Switchboard does Back to Computer. It does not do this when you sent the last screen to a device yourself.

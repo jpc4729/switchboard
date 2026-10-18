@@ -27,4 +27,4 @@ These parts are in scope:
 These parts are out of scope:
 
 - A monitor that does not accept DDC/CI. Use the monitor report form for this.
-- A warning from macOS at first launch, because the app is not notarized. The README tells you how to open it.
+- A warning from macOS at first launch of a release that is not notarized. The README tells you how to open it.

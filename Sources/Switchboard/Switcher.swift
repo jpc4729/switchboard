@@ -8,29 +8,33 @@ import IOKit.pwr_mgt
 final class Switcher {
     enum Action: Equatable { case disable, keepAndSleep, keepRunning }
 
-    /// Saved on every change.
+    /// Saved on every change; a write of the same value does nothing.
     var config = Config.load() {
         didSet {
+            guard config != oldValue else { return }
             config.save()
             holdAwake()
+            watchKept()
         }
     }
 
     private let worker = Worker()
     // The last screen, kept on while it shows a device: the user chose to leave the Mac with no screen.
-    // ponytail: in memory only, so a relaunch while a screen is kept forgets it; persist it in Config
-    // if that confuses users.
     // Changed on main, in the done callbacks. Keep Running holds the Mac awake while any screen is kept on.
-    private var keptOn: Set<String> = [] {
-        didSet {
-            holdAwake()
-            watchKept()
-        }
+    private var keptOn: Set<String> {
+        get { config.kept }
+        set { config.kept = newValue }
     }
     private var awake: IOPMAssertionID?
     private var keptTimer: Timer?
     /// Called after each timed read of the kept screens, so the menu bar follows the screens' own buttons.
     var onKeptRead: @MainActor () -> Void = {}
+
+    /// A screen kept before a relaunch holds the Mac awake and is read again from the start.
+    init() {
+        holdAwake()
+        watchKept()
+    }
 
     /// The last real active display is never disabled; it stays on, and the Mac sleeps if asked to.
     nonisolated static func action(isLastRealDisplay: Bool, mode: Config.NoScreenMode) -> Action {
@@ -44,7 +48,8 @@ final class Switcher {
     }
 
     nonisolated static func didNotSwitch(_ name: String) -> String {
-        "“\(name)” did not switch. Turn on DDC/CI in the screen’s own menu. Connect the monitor with HDMI if you can, "
+        guard DDC.isSupported else { return "“\(name)” did not switch. Input switching needs a Mac with Apple silicon." }
+        return "“\(name)” did not switch. Turn on DDC/CI in the screen’s own menu. Connect the monitor with HDMI if you can, "
             + "and turn off its picture features such as Input Signal Plus or Dynamic Brightness."
     }
 
@@ -121,14 +126,14 @@ final class Switcher {
             manager.displays().filter { $0.isEnabled && keys.contains($0.key) }
                 .compactMap { d in screens[d.key].map { (d.key, $0, DDC.readInput(d.id)) } }
         }) { inputs in
-            var choices = self.config.choices
+            var config = self.config
             for case let (key, screen, input?) in inputs {
                 if input == screen.computerInput {
-                    choices[key] = nil
-                    self.keptOn.remove(key)
-                } else if screen.devices.contains(where: { $0.input == input }) { choices[key] = .device(input) }
+                    config.choices[key] = nil
+                    config.kept.remove(key)
+                } else if screen.devices.contains(where: { $0.input == input }) { config.choices[key] = .device(input) }
             }
-            self.config.choices = choices
+            self.config = config
             done()
         }
     }
@@ -144,20 +149,23 @@ final class Switcher {
     func screensChanged(done: @escaping @MainActor (String?) -> Void) {
         run({ manager in (manager.lostAllDisplays, manager.displays().filter(\.isEnabled).map(\.key)) }) { lost, active in
             if lost, self.keptOn.isEmpty { return self.backToComputer(done: done) }
+            var choices = self.config.choices
             for key in active where !self.keptOn.contains(key) {
-                self.config.choices[key] = nil
+                choices[key] = nil
             }
+            self.config.choices = choices
             done(nil)
         }
     }
 
     private func bringBack(only: CGDirectDisplayID?, done: @escaping @MainActor (String?) -> Void) {
         let screens = config.screens
-        run({ manager -> (errors: [String], keys: [String]) in
+        run({ manager -> (errors: [String], keys: [String], listed: Set<String>) in
             var errors: [String] = []
             var keys: [String] = []
+            let all = manager.displays()
             // The list includes every display the app turned off, so this also turns them all back on.
-            for display in manager.displays() where only == nil || display.id == only {
+            for display in all where only == nil || display.id == only {
                 let name = screens[display.key]?.name ?? display.name
                 let on = display.isEnabled || manager.setEnabled(true, for: display.id)
                 if !on { errors.append("“\(name)” did not turn back on. Unplug it and plug it back in.") }
@@ -174,12 +182,15 @@ final class Switcher {
                 // Only a screen that is back on the Mac shows Mac; a failed one keeps its choice.
                 if on, switched { keys.append(display.key) }
             }
-            return (errors, keys)
+            return (errors, keys, Set(all.map(\.key)))
         }) { result in
             for key in result.keys {
                 self.config.choices[key] = nil
                 self.keptOn.remove(key)
             }
+            // A kept screen that macOS no longer lists was unplugged; forget it, or it holds the Mac awake
+            // across relaunches. Quit runs this too.
+            if only == nil { self.keptOn.formIntersection(result.listed) }
             done(result.errors.isEmpty ? nil : result.errors.joined(separator: "\n"))
         }
     }
@@ -208,22 +219,27 @@ final class Switcher {
             keptTimer?.invalidate()
             keptTimer = nil
         } else if keptTimer == nil {
-            keptTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.readInputs(of: self.keptOn) { self.onKeptRead() }
                 }
             }
+            // Common modes, so it also fires while the menu or an alert is open.
+            RunLoop.main.add(timer, forMode: .common)
+            keptTimer = timer
         }
     }
 
     private nonisolated static func sleepNow() -> String? {
         // ponytail: pmset, no public sleep-now API; IOPMSleepSystem if pmset goes away
+        let failed = "The screen switched, but the Mac could not go to sleep."
         do {
-            try Process.run(URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["sleepnow"])
-            return nil
+            let pmset = try Process.run(URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["sleepnow"])
+            pmset.waitUntilExit()
+            return pmset.terminationStatus == 0 ? nil : failed
         } catch {
-            return "The screen switched, but the Mac could not go to sleep."
+            return failed
         }
     }
 }

@@ -2,6 +2,6 @@
 - `scripts/bundle.sh` writes `Info.plist` inline. Change plist keys there; the repo has no plist file.
 - Test `switchboard://` links and Open at Login from `build/Switchboard.app`. They do not work from the `swift build` binary.
 - Call `DDC` and `DisplayManager` only inside `Switcher.run`. Their calls block for seconds, and `DisplayManager` is safe only on that one serial queue.
-- The tests cover only `Switcher.action`. When you change display or DDC code, report that it still needs a test on a real Mac with a real monitor.
+- The tests cover only the switch rules (`Switcher.action`), `Config` decoding and the DDC reply check (`DDC.isReply`), not hardware. When you change display or DDC code, report that it still needs a test on a real Mac with a real monitor.
 - Mark a known shortcut with a `// ponytail:` comment that names its upgrade path, and keep the tag when you change that code.
 - Add no package dependencies.

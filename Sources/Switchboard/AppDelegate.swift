@@ -6,7 +6,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let switcher = Switcher()
     private var statusItem: NSStatusItem!
-    /// Nil when another app owns ⌃⌥⌘B; the menu then says so.
+    /// Nil when another app holds ⌃⌥⌘B exclusively; the menu then says so.
     private(set) var hotKey: HotKey?
     // menuNeedsUpdate is synchronous, so the menu is built from this list, refreshed on launch,
     // after each action and on every screen change.
@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(screensChanged), name: NSWorkspace.didWakeNotification, object: nil
         )
-        refresh()
+        // The same check as a screen change, so screens left off by a crash come back when none is on.
+        checkScreens()
         if switcher.config.screens.isEmpty { setUp() }
     }
 
@@ -114,8 +115,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switcher.backToComputer(done: finish)
     }
 
+    /// One change sends a burst of notifications, so the screens are checked once, 1 s after the last.
     @objc private func screensChanged() {
-        switcher.screensChanged(done: finish)
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(checkScreens), object: nil)
+        perform(#selector(checkScreens), with: nil, afterDelay: 1, inModes: [.common])
+    }
+
+    // A screen change follows each switch, so a change with no error keeps the warning of a failed switch.
+    @objc private func checkScreens() {
+        switcher.screensChanged { [weak self] error in
+            guard let self else { return }
+            if error == nil, failed { refresh() } else { finish(error) }
+        }
     }
 
     func finish(_ error: String?) {
@@ -164,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !leaving else { return .terminateLater }
         leaving = true
-        // ponytail: errors only go to the log on the way out; an alert while quitting would not help much.
+        // ponytail: errors only go to the log on the way out; save them and show them at the next launch if users miss them.
         switcher.backToComputer { error in
             if let error { Logger.app.error("Back to Computer at quit: \(error, privacy: .public)") }
             sender.reply(toApplicationShouldTerminate: true)
@@ -173,11 +184,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func showError(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Switchboard"
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        runAlert {
+            let alert = NSAlert()
+            alert.messageText = "Switchboard"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            return alert
+        }
+    }
+}
+
+/// Shows the alert from a run-loop block. A modal alert started inside a main-queue block, such as a
+/// `Switcher.run` callback, stops every other main-queue block until it closes: the hotkey's result,
+/// the menu bar state and the reply to Quit would wait for the user.
+@MainActor
+func runAlert(
+    _ make: @escaping @MainActor () -> NSAlert,
+    then: @escaping @MainActor (NSAlert, NSApplication.ModalResponse) -> Void = { _, _ in }
+) {
+    RunLoop.main.perform(inModes: [.common]) {
+        MainActor.assumeIsolated {
+            let alert = make()
+            NSApp.bringToFront()
+            then(alert, alert.runModal())
+        }
+    }
+}
+
+extension NSApplication {
+    // ponytail: activate(ignoringOtherApps:) is deprecated in macOS 14 but still brings an accessory app
+    // to the front; switch to activate() when the minimum is macOS 14 and it is enough there.
+    func bringToFront() {
+        activate(ignoringOtherApps: true)
     }
 }
