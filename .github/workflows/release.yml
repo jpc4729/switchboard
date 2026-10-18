@@ -15,11 +15,6 @@ on:
 permissions:
   contents: read
 
-# Queue releases one at a time so two tags never race on the tap.
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: macos-15
@@ -30,13 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       sha256: ${{ steps.zip.outputs.sha256 }}
       notarized: ${{ steps.mode.outputs.notarized }}
-    env:
-      DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
-      DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
-      DEVELOPER_ID_NAME: ${{ secrets.DEVELOPER_ID_NAME }}
-      NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
-      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+    # Each secret goes only to the steps that use it, not to the build and upload steps.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,6 +52,13 @@ jobs:
       # A partial set fails instead of silently shipping a weaker build.
       - name: Choose signing mode
         id: mode
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          DEVELOPER_ID_NAME: ${{ secrets.DEVELOPER_ID_NAME }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
           sign=0
           for v in "$DEVELOPER_ID_P12_BASE64" "$DEVELOPER_ID_P12_PASSWORD" "$DEVELOPER_ID_NAME"; do
@@ -101,6 +97,10 @@ jobs:
 
       - name: Import Developer ID into a temporary keychain
         if: env.SIGN == 'true'
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          DEVELOPER_ID_NAME: ${{ secrets.DEVELOPER_ID_NAME }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
@@ -127,7 +127,7 @@ jobs:
 
       - name: Bundle app
         env:
-          SIGN_IDENTITY: ${{ env.SIGN == 'true' && env.DEVELOPER_ID_NAME || '' }}
+          SIGN_IDENTITY: ${{ env.SIGN == 'true' && secrets.DEVELOPER_ID_NAME || '' }}
         run: ./scripts/bundle.sh
 
       - name: Verify signature
@@ -140,6 +140,10 @@ jobs:
 
       - name: Notarize and staple
         if: env.NOTARIZE == 'true'
+        env:
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
           KEY="$RUNNER_TEMP/notary_key.p8"
           RESULT="$RUNNER_TEMP/notary_result.json"
@@ -261,10 +265,17 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # One tap update at a time, so two tags never race on the tap. GitHub keeps only the last update
+    # that starts to wait, which can be a lower version when builds finish out of order; then the tap
+    # stays one version behind until the next release. Render cask never moves the tap backwards.
+    concurrency:
+      group: tap
+      cancel-in-progress: false
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       VERSION: ${{ needs.build.outputs.version }}
       SHA256: ${{ needs.build.outputs.sha256 }}
+      NOTARIZED: ${{ needs.build.outputs.notarized }}
     steps:
       - name: Skip without tap token
         if: env.HOMEBREW_TAP_TOKEN == ''
@@ -286,6 +297,11 @@ jobs:
         if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Bad sha256 '$SHA256'"; exit 1; }
+          current="$(sed -n 's/^  version "\(.*\)"$/\1/p' tap/Casks/switchboard.rb 2>/dev/null || true)"
+          if [[ -n "$current" && "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+            echo "::notice::Tap has v$current, which is newer than v$VERSION; leaving it"
+            exit 0
+          fi
           mkdir -p tap/Casks
           sed -e "s/^  version \".*\"\$/  version \"$VERSION\"/" \
               -e "s/^  sha256 \".*\"\$/  sha256 \"$SHA256\"/" \
@@ -294,6 +310,14 @@ jobs:
              [[ "$(grep -cxF "  sha256 \"$SHA256\"" tap/Casks/switchboard.rb)" != 1 ]]; then
             echo "::error::Cask template did not render the version and sha256 lines exactly once"
             exit 1
+          fi
+          # A notarized build opens normally, so the caveat that says it is not notarized goes.
+          if [[ "$NOTARIZED" == "true" ]]; then
+            perl -0pi -e 's/\n  caveats <<~EOS\n.*?\n  EOS\n//s' tap/Casks/switchboard.rb
+            if grep -q caveats tap/Casks/switchboard.rb; then
+              echo "::error::Could not remove the caveats block from the cask"
+              exit 1
+            fi
           fi
           ruby -c tap/Casks/switchboard.rb
 
@@ -305,7 +329,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Casks/switchboard.rb
           if git diff --cached --quiet; then
-            echo "::notice::Tap already has v$VERSION"
+            echo "::notice::Tap needs no change for v$VERSION"
             exit 0
           fi
           git commit -m "chore(switchboard): update to v$VERSION"

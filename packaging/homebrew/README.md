@@ -10,7 +10,7 @@ One-time setup:
 
 Without the secret, the release still runs; it only skips the tap bump.
 
-The `caveats` block says that the app is not notarized. When the Developer ID and notary secrets are set, remove that block from the template.
+The `caveats` block says that the app is not notarized. When a release is notarized, the workflow removes that block from the tap's copy. Keep the block's first line as `  caveats <<~EOS` and its last line as `  EOS`, or the release stops with an error.
 
 Users install with:
 
